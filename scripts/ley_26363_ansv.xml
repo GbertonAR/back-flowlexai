@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<akomaNtoso xmlns="http://docs.oasis-open.org/legaldocml/ns/akn/3.0">
+    <bill name="ley">
+        <meta>
+            <identification source="#redactor">
+                <FRBRWork>
+                    <FRBRthis value="/ar/ley/2008-04-09/26363/main"/>
+                    <FRBRuri value="/ar/ley/2008-04-09/26363"/>
+                    <FRBRdate date="2008-04-09" name="Enactment"/>
+                    <FRBRauthor href="#parlamento"/>
+                    <FRBRcountry value="ar"/>
+                </FRBRWork>
+                <FRBRExpression>
+                    <FRBRthis value="/ar/ley/2008-04-09/26363/es/main"/>
+                    <FRBRuri value="/ar/ley/2008-04-09/26363/es"/>
+                    <FRBRdate date="2008-04-30" name="Publication"/>
+                    <FRBRauthor href="#parlamento"/>
+                    <FRBRlanguage language="es"/>
+                </FRBRExpression>
+            </identification>
+        </meta>
+        <body>
+            <mainBody>
+                <article eId="art1">
+                    <num>Articulo 1.-</num>
+                    <heading>CREACION DE LA AGENCIA NACIONAL DE SEGURIDAD VIAL</heading>
+                    <paragraph eId="art1-para1">
+                        <content>
+                            <p>Crease la AGENCIA NACIONAL DE SEGURIDAD VIAL como organismo descentralizado en el ámbito del MINISTERIO DEL INTERIOR, con autarquía económica financiera, personería jurídica propia y capacidad de actuación en el ámbito del derecho publico y privado.</p>
+                        </content>
+                    </paragraph>
+                </article>
+                <article eId="art2">
+                    <num>Articulo 2.-</num>
+                    <heading>MISION</heading>
+                    <paragraph eId="art2-para1">
+                        <content>
+                            <p>La AGENCIA NACIONAL DE SEGURIDAD VIAL es la autoridad de aplicación de las políticas y medidas de seguridad vial nacionales previstas en la presente ley y en la Ley Nº 24.449.</p>
+                        </content>
+                    </paragraph>
+                </article>
+            </mainBody>
+        </body>
+    </bill>
+</akomaNtoso>
