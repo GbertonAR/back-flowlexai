@@ -11,6 +11,7 @@ FECHA CREACIÓN: 2026-03-07
 REF. TICKET: #FS-FIN-001
 """
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -26,11 +27,27 @@ from app.modules.assistant import router as assistant_router
 from app.modules.external import router as external_router
 from app import models # Importar modelos para registro de metadatos (FKs)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("✅ [OK] LexIA Core Engine Iniciado correctamente. Inicializando SQLite local...")
+    try:
+        from sqlmodel import SQLModel
+        from app.db.session import engine
+        SQLModel.metadata.create_all(engine)
+        from scripts.seed_test_users import seed
+        seed()
+        logger.info("✅ [OK] Seed de usuarios de prueba completado (admin, legislator, analyst, readonly).")
+    except Exception as e:
+        logger.error(f"❌ [FAULT] Error en el seed de Base de Datos: {e}")
+    await health_monitor.run_full_diagnostic()
+    yield
+
 app = FastAPI(
     title="LexIA Core API",
     description="Soberano engine for neural legislative orchestration.",
     version="1.2.0",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    lifespan=lifespan
 )
 
 # Registrando Routers
@@ -54,19 +71,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def on_startup():
-    logger.info("✅ [OK] LexIA Core Engine Iniciado correctamente. Inicializando SQLite local...")
-    try:
-        from sqlmodel import SQLModel
-        from app.db.session import engine
-        SQLModel.metadata.create_all(engine)
-        from scripts.seed_test_users import seed
-        seed()
-        logger.info("✅ [OK] Seed de usuarios de prueba completado (admin, legislator, analyst, readonly).")
-    except Exception as e:
-        logger.error(f"❌ [FAULT] Error en el seed de Base de Datos: {e}")
-    await health_monitor.run_full_diagnostic()
 
 @app.get("/")
 def root():

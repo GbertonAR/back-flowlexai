@@ -17,7 +17,7 @@ from app.modules.assistant.drafting_orchestrator import run_drafting
 from app.modules.bias.bias_detector import bias_detector
 from app.core.logger import forensic_log as logger
 from app.api.deps import get_current_user
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.models.tenant import Tenant
 from sqlmodel import Session
 from app.db.session import engine
@@ -78,13 +78,13 @@ async def extract_text_from_file(
         
         if filename.endswith(".pdf"):
             from pypdf import PdfReader
-            logger.info(f"🧠 [WORKFLOW] Procesando PDF binario...")
+            logger.info("🧠 [WORKFLOW] Procesando PDF binario...")
             reader = PdfReader(io.BytesIO(content))
             extracted_text = "\n".join([page.extract_text() or "" for page in reader.pages])
             
         elif filename.endswith(".docx"):
             import docx
-            logger.info(f"🧠 [WORKFLOW] Procesando DOCX (XML Open Packaging)...")
+            logger.info("🧠 [WORKFLOW] Procesando DOCX (XML Open Packaging)...")
             doc = docx.Document(io.BytesIO(content))
             extracted_text = "\n".join([para.text for para in doc.paragraphs])
             
@@ -93,7 +93,7 @@ async def extract_text_from_file(
             raise HTTPException(status_code=400, detail="Solo se soportan archivos PDF y DOCX.")
 
         if not extracted_text.strip():
-            logger.warning(f"⚠️ [WORKFLOW] El archivo extraído parece estar vacío.")
+            logger.warning("⚠️ [WORKFLOW] El archivo extraído parece estar vacío.")
 
         logger.info(f"✅ [OK] Extracción finalizada ({len(extracted_text)} caracteres).")
         return {"status": "✅ OK", "text": extracted_text}
@@ -101,6 +101,43 @@ async def extract_text_from_file(
     except Exception as e:
         logger.error(f"❌ [FAULT] Error en extracción de archivo: {e}")
         raise HTTPException(status_code=500, detail=f"Error al procesar el archivo: {str(e)}")
+
+class ClassifyRequest(BaseModel):
+    problem_description: str
+    area_tematica: str = ""
+    tenant_id: int
+
+@router.post("/classify-instrument", summary="Análisis de necesidad normativa")
+async def classify_instrument(
+    req: ClassifyRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    🧠 [WORKFLOW] Paso 0 del wizard de redacción.
+    Dado un problema o idea, determina el instrumento normativo más adecuado:
+    A) Nueva ley · B) Modificación de ley existente ·
+    C) Decreto/resolución · D) Cambio de procedimiento administrativo.
+    Todas las citas están respaldadas por el corpus legislativo indexado.
+    """
+    from app.modules.drafting.legal_instrument_classifier import run_instrument_classification
+
+    with Session(engine) as session:
+        tenant = session.get(Tenant, req.tenant_id)
+        if not tenant:
+            logger.error(f"❌ [FAULT] Tenant {req.tenant_id} no encontrado para clasificación.")
+            raise HTTPException(status_code=404, detail="Tenant no encontrado")
+
+    try:
+        result = await run_instrument_classification(
+            tenant_id=req.tenant_id,
+            problem_description=req.problem_description,
+            area_tematica=req.area_tematica,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"❌ [FAULT] Error en clasificación de instrumento: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 class AnalysisRequest(BaseModel):
     draft: str

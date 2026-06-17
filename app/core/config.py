@@ -53,6 +53,7 @@ class LexIASettings(BaseModel):
     ENCRYPTION_KEY: str  = get_config("ENCRYPTION_KEY", "")
 
     # ── Azure OpenAI ───────────────────────────────────────────────
+    USE_MANAGED_IDENTITY: bool = get_config("USE_MANAGED_IDENTITY", "false").lower() == "true"
     OPENAI_API_KEY: str     = get_config("OPENAI_API_KEY", "")
     OPENAI_ENDPOINT: str    = get_config("OPENAI_ENDPOINT", "")
     OPENAI_API_VERSION: str = get_config("OPENAI_API_VERSION", "2024-05-01-preview")
@@ -63,7 +64,7 @@ class LexIASettings(BaseModel):
     # ── JWT / IAM ──────────────────────────────────────────────────
     SECRET_KEY: str = get_config("SECRET_KEY", ENCRYPTION_KEY or "lexia-dev-secret-change-in-prod")
     ALGORITHM: str  = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480 
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # ── CORS ───────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list = get_config("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")

@@ -11,6 +11,7 @@ env/
 
 # Env files — NUNCA commitear con valores reales
 .env
+.env.*
 secret.env
 
 # Base de datos local

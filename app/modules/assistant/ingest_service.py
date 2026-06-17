@@ -70,7 +70,7 @@ class IngestService:
                 **({"cn_version": cn_version} if cn_version else {}),
             }
             
-            logger.info(f"🧬 [AGENT] Iniciando indexación vectorial en ChromaDB...")
+            logger.info(f"🧬 [AGENT] Iniciando indexación vectorial en FAISS...")
             rag_result = vector_store.ingest_text(
                 tenant_id=str(tenant_id),
                 text=content,

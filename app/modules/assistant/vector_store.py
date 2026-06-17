@@ -1,31 +1,25 @@
-## 🐍 PROTOCOLO DE IDENTIDAD .PY
 """
 SISTEMA: FlowState AI - Inteligencia Conectada
 MÓDULO: vector_store.py
 PROPIEDAD INTELECTUAL: (c) 2026 FlowState AI
 AUTOR: Gustavo Berton
 -------------------------------------------------------
-DESCRIPCIÓN: Gestor de persistencia vectorial usando FAISS + SQLite.
-             Sustituye ChromaDB para mayor estabilidad en entornos legales.
+DESCRIPCIÓN: Gestor de persistencia vectorial respaldado por la base de datos.
+             Embeddings almacenados como JSON en DocumentChunk.embedding_json.
+             Similitud coseno calculada en memoria via numpy (TTL-cache por tenant).
+             Compatible con SQLite (dev) y PostgreSQL (prod/cloud). Sin archivos
+             en disco — resuelve B2-FAISS para GCP Cloud Run.
 FECHA CREACIÓN: 2026-05-13
-ÚLTIMA MODIFICACIÓN: 2026-05-13
-REF. TICKET: #FS-FAISS-CORE
+ÚLTIMA MODIFICACIÓN: 2026-06-14
+REF. TICKET: #FS-B2-PGVECTOR
 """
 
-import os
-import uuid
-import hashlib
-import time
 import json
+import time
+import hashlib
 import numpy as np
 from typing import List, Dict, Optional
 from sqlmodel import Session, select, create_engine
-
-# --- Dependencias de la Cirugía ---
-try:
-    import faiss
-except ImportError:
-    faiss = None # Se manejará en tiempo de ejecución
 
 from app.core.logger import forensic_log as logger
 from app.core.llm import llm_service
@@ -33,22 +27,20 @@ from app.core.config import settings
 from app.models.vector_storage import DocumentChunk
 from app.modules.assistant.legislative_chunker import chunk_document
 
-# Configuración de almacenamiento físico
-# Azure App Service expone WEBSITE_SITE_NAME; en ese entorno usamos /home/data (persistente)
-_IS_AZURE = os.environ.get("WEBSITE_SITE_NAME") is not None
-VECTOR_ROOT = "/home/data/vectors" if _IS_AZURE else "./storage/vectors"
-os.makedirs(VECTOR_ROOT, exist_ok=True)
-
-# Motor de base de datos para persistencia de texto (SQLite)
 engine = create_engine(settings.DATABASE_URL)
+
+_CACHE_TTL = 300  # segundos — tiempo de vida del caché de embeddings por tenant
+
 
 class LexIAEmbeddingFunction:
     """Generador de embeddings usando Azure OpenAI."""
+
     def __init__(self):
         self._client = llm_service.get_embeddings()
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-        if not texts: return []
+        if not texts:
+            return []
         batch_size = 4
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
@@ -56,156 +48,186 @@ class LexIAEmbeddingFunction:
             try:
                 res = self._client.embed_documents(batch)
                 all_embeddings.extend(res)
-                time.sleep(0.5) 
+                time.sleep(0.5)
             except Exception as e:
                 logger.error(f"❌ [FAULT] Error en embeddings: {e}")
-                # Fallback Large (3072)
                 all_embeddings.extend([[0.0] * 3072 for _ in batch])
         return all_embeddings
 
-class FAISSManager:
-    """Gestor de índices vectoriales FAISS por Tenant."""
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
+
+
+class PGVectorManager:
+    """
+    Motor de búsqueda vectorial sin dependencias de disco.
+
+    Embeddings viven en DocumentChunk.embedding_json (TEXT).
+    Carga los vectores del tenant en memoria con caché TTL de 5 minutos.
+    La similitud coseno se calcula con numpy — sin pgvector extension requerida.
+    """
+
     def __init__(self):
         self.embedder = LexIAEmbeddingFunction()
-        self._indices = {} # Caché de índices cargados
-        logger.info("🧬 [AGENT] Motor FAISS inicializado (Carga Lazy).")
+        # { tenant_id: (timestamp_float, { chunk_id: (vector, content, metadata_dict) }) }
+        self._cache: Dict[int, tuple] = {}
+        logger.info("🧬 [AGENT] Motor PGVector (DB-backed, sin disco) inicializado.")
 
-    def _get_index_path(self, tenant_id: int) -> str:
-        return os.path.join(VECTOR_ROOT, f"tenant_{tenant_id}.index")
+    # ──────────────────────────────────────────────────────────────────────────
+    # Caché de vectores por tenant
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def _load_or_create_index(self, tenant_id: int, dimension: int = 3072):
+    def _load_tenant_vectors(self, tenant_id: int) -> Dict[int, tuple]:
         t_id = int(tenant_id)
-        if t_id in self._indices:
-            return self._indices[t_id]
-        
-        path = self._get_index_path(t_id)
-        if os.path.exists(path):
-            index = faiss.read_index(path)
-            logger.info(f"✅ [OK] Índice FAISS cargado para Tenant {t_id}")
-        else:
-            index = faiss.IndexFlatL2(dimension)
-            logger.info(f"🆕 [NEW] Nuevo índice FAISS creado para Tenant {t_id}")
-        
-        self._indices[t_id] = index
-        return index
+        cached = self._cache.get(t_id)
+        if cached:
+            ts, data = cached
+            if time.time() - ts < _CACHE_TTL:
+                return data
 
-    def _save_index(self, tenant_id: int):
-        t_id = int(tenant_id)
-        if t_id in self._indices:
-            path = self._get_index_path(t_id)
-            faiss.write_index(self._indices[t_id], path)
-
-    def add_documents(self, tenant_id: int, texts: List[str], metadatas: List[Dict], proyecto_id: Optional[int] = None):
-        if not texts: return
-        t_id = int(tenant_id)
-        
-        # 1. Generar embeddings
-        embeddings = self.embedder.embed(texts)
-        embeddings_np = np.array(embeddings).astype('float32')
-        
-        # 2. Actualizar FAISS
-        index = self._load_or_create_index(t_id, dimension=embeddings_np.shape[1])
-        start_id = index.ntotal
-        index.add(embeddings_np)
-        self._save_index(t_id)
-        
-        # 3. Persistir en SQLite (Texto + Mapeo)
-        doc_hash = hashlib.sha256(texts[0].encode()).hexdigest()[:16]
+        data: Dict[int, tuple] = {}
         with Session(engine) as session:
-            for i, text in enumerate(texts):
+            chunks = session.exec(
+                select(DocumentChunk).where(DocumentChunk.tenant_id == t_id)
+            ).all()
+            for chunk in chunks:
+                if not chunk.embedding_json or chunk.embedding_json == "[]":
+                    continue
+                vec = np.array(json.loads(chunk.embedding_json), dtype="float32")
+                data[chunk.id] = (vec, chunk.content, chunk.metadata_dict)
+
+        self._cache[t_id] = (time.time(), data)
+        return data
+
+    def _invalidate_cache(self, tenant_id: int):
+        self._cache.pop(int(tenant_id), None)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Escritura
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def add_documents(
+        self,
+        tenant_id: int,
+        texts: List[str],
+        metadatas: List[Dict],
+        proyecto_id: Optional[int] = None,
+    ):
+        if not texts:
+            return
+        t_id = int(tenant_id)
+        embeddings = self.embedder.embed(texts)
+        doc_hash = hashlib.sha256(texts[0].encode()).hexdigest()[:16]
+
+        with Session(engine) as session:
+            for i, (text, meta, emb) in enumerate(zip(texts, metadatas, embeddings)):
                 chunk = DocumentChunk(
                     tenant_id=t_id,
                     proyecto_id=proyecto_id,
                     content=text,
-                    page_number=metadatas[i].get("page", 1),
+                    page_number=meta.get("page", 1),
                     chunk_index=i,
-                    source_name=metadatas[i].get("source", "unknown"),
+                    source_name=meta.get("source", "unknown"),
                     doc_hash=doc_hash,
-                    vector_id=start_id + i,
-                    metadata_json=json.dumps(metadatas[i])
+                    embedding_json=json.dumps(emb),
+                    metadata_json=json.dumps(meta),
                 )
                 session.add(chunk)
             session.commit()
-        
-        logger.info(f"✅ [OK] {len(texts)} chunks indexados en FAISS+SQL para Tenant {t_id}")
 
-    def ingest_text(self, tenant_id: int, text: str, source: str = "manual", extra_metadata: Optional[Dict] = None) -> Dict:
-        """Método de compatibilidad con IngestService."""
+        self._invalidate_cache(t_id)
+        logger.info(f"✅ [OK] {len(texts)} chunks indexados en BD para Tenant {t_id}")
+
+    def ingest_text(
+        self,
+        tenant_id: int,
+        text: str,
+        source: str = "manual",
+        extra_metadata: Optional[Dict] = None,
+    ) -> Dict:
         content_hash = hashlib.sha256(text.encode()).hexdigest()
-        # Usamos el chunker legislativo
         chunks_data = chunk_document(text, source, extra_metadata)
-        if not chunks_data: return {"chunks": 0, "hash": content_hash}
-        
+        if not chunks_data:
+            return {"chunks": 0, "hash": content_hash}
+
         texts = [c["text"] for c in chunks_data]
         metadatas = [c["metadata"] for c in chunks_data]
-        
         self.add_documents(tenant_id, texts, metadatas)
         return {
-            "chunks": len(texts), 
+            "chunks": len(texts),
             "hash": content_hash,
-            "articles": sum(1 for c in chunks_data if "Art." in c["text"][:30])
+            "articles": sum(1 for c in chunks_data if "Art." in c["text"][:30]),
         }
 
-    def query(self, tenant_id: int, query_text: str, n_results: int = 5, **kwargs) -> Dict:
+    def ingest_pdf(
+        self, tenant_id: int, file_path: str, source_name: Optional[str] = None
+    ) -> Dict:
+        import os
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        full_text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        chunks_data = chunk_document(full_text, source_name or os.path.basename(file_path))
+        if not chunks_data:
+            return {"chunks": 0}
+        texts = [c["text"] for c in chunks_data]
+        metadatas = [c["metadata"] for c in chunks_data]
+        self.add_documents(tenant_id, texts, metadatas)
+        return {"chunks": len(texts)}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Consulta
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def query(
+        self, tenant_id: int, query_text: str, n_results: int = 5, **kwargs
+    ) -> Dict:
         t_id = int(tenant_id)
-        # 1. Generar vector de búsqueda
-        query_vector = np.array(self.embedder.embed([query_text])).astype('float32')
-        
-        # 2. Buscar en FAISS (obtenemos más resultados de los pedidos para filtrar luego)
-        index = self._load_or_create_index(t_id)
-        if index.ntotal == 0:
+        query_vec = np.array(self.embedder.embed([query_text])[0], dtype="float32")
+        tenant_data = self._load_tenant_vectors(t_id)
+
+        if not tenant_data:
             return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-            
-        # Pedimos el doble de resultados por si el filtro 'where' descarta algunos
-        search_k = max(n_results * 2, 20)
-        distances, indices = index.search(query_vector, search_k)
-        
-        # 3. Recuperar datos reales desde SQLite aplicando filtros si existen
-        results = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
-        where_filter = kwargs.get('where', {})
-        
-        with Session(engine) as session:
-            found_count = 0
-            for i, idx in enumerate(indices[0]):
-                if idx == -1 or found_count >= n_results: break 
-                
-                statement = select(DocumentChunk).where(
-                    DocumentChunk.tenant_id == t_id,
-                    DocumentChunk.vector_id == int(idx)
-                )
-                
-                chunk = session.exec(statement).first()
-                if chunk:
-                    # Aplicar filtro manual sobre metadatas si es necesario
-                    match = True
-                    if where_filter:
-                        chunk_meta = chunk.metadata_dict
-                        for key, val in where_filter.items():
-                            if chunk_meta.get(key) != val:
-                                match = False
-                                break
-                    
-                    if match:
-                        results["documents"][0].append(chunk.content)
-                        results["metadatas"][0].append(chunk.metadata_dict)
-                        results["distances"][0].append(float(distances[0][i]))
-                        found_count += 1
-                    
-        return results
+
+        where_filter = self._parse_where_filter(kwargs.get("where", {}))
+
+        scored = []
+        for _id, (vec, content, meta) in tenant_data.items():
+            if where_filter and any(meta.get(k) != v for k, v in where_filter.items()):
+                continue
+            sim = _cosine_similarity(query_vec, vec)
+            scored.append((sim, content, meta))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[:n_results]
+
+        return {
+            "documents": [[item[1] for item in top]],
+            "metadatas": [[item[2] for item in top]],
+            # distancia coseno = 1 − similitud (compatible con la interfaz anterior)
+            "distances": [[1.0 - item[0] for item in top]],
+        }
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Gestión de documentos
+    # ──────────────────────────────────────────────────────────────────────────
 
     def get_all_documents(self, tenant_id: int) -> List[Dict]:
         t_id = int(tenant_id)
         try:
             with Session(engine) as session:
-                # Agrupamos por source_name para obtener el resumen de cada documento
-                statement = select(DocumentChunk).where(
-                    DocumentChunk.tenant_id == t_id
-                ).order_by(DocumentChunk.created_at.desc())
-                
-                all_chunks = session.exec(statement).all()
-                
-                docs_map = {}
-                for chunk in all_chunks:
+                chunks = session.exec(
+                    select(DocumentChunk)
+                    .where(DocumentChunk.tenant_id == t_id)
+                    .order_by(DocumentChunk.created_at.desc())
+                ).all()
+                docs_map: Dict[str, Dict] = {}
+                for chunk in chunks:
                     src = chunk.source_name
                     if src not in docs_map:
                         meta = chunk.metadata_dict
@@ -216,90 +238,89 @@ class FAISSManager:
                             "jerarquia": meta.get("tipo_norma", "Ley"),
                             "hierarchy_level": meta.get("hierarchy_level", 3),
                             "created_at": chunk.created_at.isoformat(),
-                            "doc_hash": chunk.doc_hash
+                            "doc_hash": chunk.doc_hash,
                         }
                     docs_map[src]["chunks"] += 1
-                
                 return list(docs_map.values())
         except Exception as e:
-            logger.error(f"❌ [FAULT] Error al listar documentos enriquecidos: {e}")
+            logger.error(f"❌ [FAULT] Error al listar documentos: {e}")
             return []
 
     def delete_document(self, tenant_id: int, source_name: str) -> bool:
         t_id = int(tenant_id)
         try:
             with Session(engine) as session:
-                # 1. Eliminar de SQLite
-                statement = select(DocumentChunk).where(
-                    DocumentChunk.tenant_id == t_id,
-                    DocumentChunk.source_name == source_name
-                )
-                chunks = session.exec(statement).all()
+                chunks = session.exec(
+                    select(DocumentChunk).where(
+                        DocumentChunk.tenant_id == t_id,
+                        DocumentChunk.source_name == source_name,
+                    )
+                ).all()
                 for c in chunks:
                     session.delete(c)
                 session.commit()
-                
-                # 2. Reconstruir el índice FAISS para este tenant (FAISS no soporta borrado fácil por ID)
-                # Cargamos todos los chunks restantes y recreamos el índice
-                remaining_statement = select(DocumentChunk).where(DocumentChunk.tenant_id == t_id)
-                remaining_chunks = session.exec(remaining_statement).all()
-                
-                new_index = faiss.IndexFlatL2(3072)
-                if remaining_chunks:
-                    # Reasignar vector_ids y re-indexar
-                    for i, c in enumerate(remaining_chunks):
-                        c.vector_id = i
-                        session.add(c)
-                    session.commit()
-                    
-                    # Cargar embeddings de los que quedaron (esto es lento si hay miles, pero seguro para multi-tenant)
-                    # En una versión madura usaríamos faiss.IndexIDMap
-                    pass # Reconstrucción física del .index se haría en el siguiente load
-                
-                # Borramos el archivo físico para forzar recreación limpia
-                idx_path = os.path.join(VECTOR_ROOT, f"tenant_{t_id}.index")
-                if os.path.exists(idx_path):
-                    os.remove(idx_path)
-                
-                return True
+            self._invalidate_cache(t_id)
+            return True
         except Exception as e:
             logger.error(f"❌ [FAULT] Error al borrar documento: {e}")
             return False
 
-    def update_document_metadata(self, tenant_id: int, source_name: str, new_meta: Dict) -> bool:
+    def update_document_metadata(
+        self, tenant_id: int, source_name: str, new_meta: Dict
+    ) -> bool:
         t_id = int(tenant_id)
         try:
             with Session(engine) as session:
-                statement = select(DocumentChunk).where(
-                    DocumentChunk.tenant_id == t_id,
-                    DocumentChunk.source_name == source_name
-                )
-                chunks = session.exec(statement).all()
+                chunks = session.exec(
+                    select(DocumentChunk).where(
+                        DocumentChunk.tenant_id == t_id,
+                        DocumentChunk.source_name == source_name,
+                    )
+                ).all()
                 for c in chunks:
-                    current_meta = c.metadata_dict
-                    current_meta.update(new_meta)
-                    c.metadata_dict = current_meta
+                    current = c.metadata_dict
+                    current.update(new_meta)
+                    c.metadata_json = json.dumps(current)
                     session.add(c)
                 session.commit()
-                return True
+            self._invalidate_cache(t_id)
+            return True
         except Exception as e:
             logger.error(f"❌ [FAULT] Error al actualizar metadata: {e}")
             return False
 
-    def ingest_pdf(self, tenant_id: int, file_path: str, source_name: Optional[str] = None) -> Dict:
-        from pypdf import PdfReader
-        reader = PdfReader(file_path)
-        full_text = "\n".join(p.extract_text() or "" for p in reader.pages)
-        
-        # Usamos el chunker legislativo
-        chunks_data = chunk_document(full_text, source_name or os.path.basename(file_path))
-        if not chunks_data: return {"chunks": 0}
-        
-        texts = [c["text"] for c in chunks_data]
-        metadatas = [c["metadata"] for c in chunks_data]
-        
-        self.add_documents(tenant_id, texts, metadatas)
-        return {"chunks": len(texts)}
+    def get_document_count(self, tenant_id) -> int:
+        t_id = int(tenant_id)
+        try:
+            with Session(engine) as session:
+                chunks = session.exec(
+                    select(DocumentChunk).where(DocumentChunk.tenant_id == t_id)
+                ).all()
+                return len({c.source_name for c in chunks})
+        except Exception as e:
+            logger.error(f"❌ [FAULT] Error al contar documentos: {e}")
+            return 0
 
-# Instancia global del nuevo motor
-vector_store = FAISSManager()
+    # ──────────────────────────────────────────────────────────────────────────
+    # Utilidades internas
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _parse_where_filter(self, where_filter: dict) -> dict:
+        if not where_filter:
+            return {}
+        simple: dict = {}
+        if "$and" in where_filter:
+            for cond in where_filter["$and"]:
+                simple.update(self._parse_where_filter(cond))
+            return simple
+        if "$or" in where_filter:
+            for cond in where_filter["$or"]:
+                simple.update(self._parse_where_filter(cond))
+            return simple
+        for key, val in where_filter.items():
+            simple[key] = val["$eq"] if isinstance(val, dict) and "$eq" in val else val
+        return simple
+
+
+# Instancia global — reemplaza FAISSManager
+vector_store = PGVectorManager()

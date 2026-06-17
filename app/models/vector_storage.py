@@ -35,10 +35,12 @@ class DocumentChunk(SQLModel, table=True):
     source_name: str = Field(max_length=255, index=True)
     doc_hash: str = Field(max_length=64, index=True)
     
-    # El vínculo con FAISS
-    # El 'vector_id' es la posición (row index) en el índice FAISS del Tenant
-    vector_id: int = Field(index=True, description="Índice en el archivo .index de FAISS")
-    
+    # Obsoleto post-migración pgvector; se mantiene nullable para no romper datos históricos
+    vector_id: Optional[int] = Field(default=None, index=True)
+
+    # Embedding persistido en BD — reemplaza el índice FAISS en disco
+    embedding_json: str = Field(default="[]", description="Vector float32 serializado como JSON")
+
     # Metadatos extendidos (Jurisdicción, Jerarquía, etc.)
     metadata_json: str = Field(default="{}", description="Metadatos en formato JSON")
     

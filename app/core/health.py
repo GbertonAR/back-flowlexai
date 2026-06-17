@@ -64,14 +64,14 @@ class HealthService:
             return False
 
     async def check_storage(self) -> bool:
-        """Verifica si el directorio de ChromaDB es escribible."""
+        """Verifica que la tabla de vectores es accesible en la BD (reemplaza check FAISS en disco)."""
         try:
-            import os
-            db_path = "./chroma_db"
-            if not os.path.exists(db_path):
-                os.makedirs(db_path, exist_ok=True)
-            return os.access(db_path, os.W_OK)
+            from sqlmodel import Session, text as sa_text
+            with engine.connect() as conn:
+                conn.execute(sa_text("SELECT 1 FROM documentchunk LIMIT 1"))
+            return True
         except Exception:
+            # La tabla puede estar vacía; si la consulta falla por tabla inexistente, retorna False
             return False
 
     async def run_full_diagnostic(self):
