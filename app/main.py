@@ -12,6 +12,7 @@ REF. TICKET: #FS-FIN-001
 """
 import os
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -25,11 +26,26 @@ from app.api.endpoints import (
 )
 from app.modules.assistant import router as assistant_router
 from app.modules.external import router as external_router
-from app import models # Importar modelos para registro de metadatos (FKs)
+from app import models  # noqa: F401 — side-effect: registra metadatos SQLModel (FKs)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("✅ [OK] LexIA Core Engine Iniciado correctamente. Inicializando SQLite local...")
+    logger.info("✅ [OK] LexIA Core Engine Iniciado correctamente.")
+
+    # ── Migraciones Alembic (siempre primero) ─────────────────────
+    try:
+        from alembic.config import Config
+        from alembic import command as alembic_command
+
+        _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _cfg = Config(os.path.join(_base, "alembic.ini"))
+        _cfg.set_main_option("script_location", os.path.join(_base, "migrations"))
+        alembic_command.upgrade(_cfg, "head")
+        logger.info("✅ [OK] Migraciones Alembic aplicadas (upgrade head).")
+    except Exception as e:
+        logger.error(f"❌ [FAULT] Error aplicando migraciones Alembic: {e}")
+
+    # ── Tablas nuevas sin migración (fallback create_all) ─────────
     try:
         from sqlmodel import SQLModel
         from app.db.session import engine
@@ -39,6 +55,7 @@ async def lifespan(app: FastAPI):
         logger.info("✅ [OK] Seed de usuarios de prueba completado (admin, legislator, analyst, readonly).")
     except Exception as e:
         logger.error(f"❌ [FAULT] Error en el seed de Base de Datos: {e}")
+
     await health_monitor.run_full_diagnostic()
     yield
 
