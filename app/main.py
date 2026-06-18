@@ -45,6 +45,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ [FAULT] Error aplicando migraciones Alembic: {e}")
 
+    # ── Fallback SQL: garantiza columna embedding_json en producción ──
+    try:
+        from sqlalchemy import text, inspect as sa_inspect
+        from app.db.session import engine
+        with engine.connect() as conn:
+            cols = [c["name"] for c in sa_inspect(conn).get_columns("documentchunk")]
+            if "embedding_json" not in cols:
+                conn.execute(text("ALTER TABLE documentchunk ADD COLUMN embedding_json TEXT NOT NULL DEFAULT '[]'"))
+                conn.commit()
+                logger.info("✅ [OK] Columna embedding_json agregada via SQL fallback.")
+    except Exception as e:
+        logger.error(f"❌ [FAULT] SQL fallback embedding_json falló: {e}")
+
     # ── Tablas nuevas sin migración (fallback create_all) ─────────
     try:
         from sqlmodel import SQLModel
