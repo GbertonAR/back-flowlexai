@@ -13,7 +13,6 @@ REF. TICKET: #FS-005
 
 import logging
 import sys
-import os
 from pathlib import Path
 
 # Asegurar que el directorio de logs exista
@@ -60,7 +59,12 @@ def setup_forensic_logger(name: str = "FlowLex") -> logging.Logger:
         
         logger.addHandler(console_handler)
         logger.addHandler(file_handler)
-        
+
+        # Alertas por email ante errores (rate-limit 5 min, hilo daemon)
+        from app.core.email_alerts import error_email_handler
+        error_email_handler.setFormatter(formatter)
+        logger.addHandler(error_email_handler)
+
     return logger
 
 forensic_log = setup_forensic_logger()
