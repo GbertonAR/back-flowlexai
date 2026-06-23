@@ -11,12 +11,17 @@ FECHA CREACIÓN: 2026-03-07
 REF. TICKET: #FS-000
 """
 
+import os
 from sqlmodel import create_engine, Session
 from app.core.config import settings
 
+# En Azure App Service, /home/data/ debe existir antes de que SQLite intente crear el archivo
+if os.environ.get("WEBSITE_SITE_NAME") and "sqlite" in settings.DATABASE_URL.lower():
+    os.makedirs("/home/data", exist_ok=True)
+
 engine = create_engine(
-    settings.DATABASE_URL, 
-    echo=False, 
+    settings.DATABASE_URL,
+    echo=False,
     pool_pre_ping=True
 )
 

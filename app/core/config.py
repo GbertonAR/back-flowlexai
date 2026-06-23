@@ -64,7 +64,7 @@ class LexIASettings(BaseModel):
     # ── JWT / IAM ──────────────────────────────────────────────────
     SECRET_KEY: str = get_config("SECRET_KEY", ENCRYPTION_KEY or "lexia-dev-secret-change-in-prod")
     ALGORITHM: str  = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(get_config("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))
 
     # ── CORS ───────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list = get_config("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
