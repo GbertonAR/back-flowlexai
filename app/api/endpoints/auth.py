@@ -19,7 +19,7 @@ from datetime import timedelta
 
 from app.core.security import hash_password, verify_password, create_access_token
 from app.core.config import settings
-from app.core.email_service import send_demo_user_notification
+from app.core.email_service import send_demo_user_notification, send_login_notification
 from app.core.logger import forensic_log as logger
 from app.db.session import get_session
 from app.models.tenant import Tenant
@@ -110,6 +110,7 @@ def register_user(
 
 @router.post("/login", response_model=TokenResponse)
 def login(
+    background_tasks: BackgroundTasks,
     form_data: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session),
 ):
@@ -141,6 +142,10 @@ def login(
         expires_delta=expires,
     )
     logger.info(f"✅ [OK] Login exitoso: {user.email} (rol: {user.role})")
+    background_tasks.add_task(
+        send_login_notification,
+        user.email, user.full_name, user.role.value, user.tenant_id or 0,
+    )
     return TokenResponse(
         access_token=token,
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60

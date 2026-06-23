@@ -12,6 +12,7 @@ FECHA CREACIÓN: 2026-05-06
 REF. TICKET: #FS-ONT-004
 """
 
+import uuid
 from sqlmodel import Session, select
 from app.db.session import engine
 from app.models.expediente import Proyecto, TipoNorma, EstadoExpediente
@@ -33,34 +34,49 @@ class IngestService:
         """
         🌐 [REQ] Procesa un documento: crea el Proyecto y lo indexa en RAG con metadata.
         """
+        rid = uuid.uuid4().hex[:8]
+        logger.info(f"🌐 [REQ] [{rid}] Ingesta iniciada: '{filename}' | tenant={tenant_id} | user={user_id}")
+
         with Session(engine) as session:
-            # 1. Verificar Tipo de Norma
-            tipo_norma = session.get(TipoNorma, tipo_norma_id)
-            if not tipo_norma or tipo_norma.tenant_id != tenant_id:
-                raise ValueError("Tipo de Norma no válido para este Tenant.")
 
-            # 2. Ingestar en Vector Store (RAG)
-            from app.modules.assistant.normative_hierarchy import (
-                get_hierarchy_level, detect_cn_version, is_cn_document, CN_VIGENTE_VERSION
-            )
-            hierarchy_level = get_hierarchy_level(tipo_norma.nombre)
-            logger.info(f"🧠 [WORKFLOW] Jerarquía detectada: {tipo_norma.nombre} (Nivel {hierarchy_level})")
+            # ── PASO 1: Verificar TipoNorma ───────────────────────────────────
+            logger.info(f"🧠 [WORKFLOW] [{rid}] PASO 1 — Verificando TipoNorma id={tipo_norma_id}")
+            try:
+                tipo_norma = session.get(TipoNorma, tipo_norma_id)
+            except Exception as e:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 1 — Error al consultar TipoNorma: {e}")
+                raise
 
-            # Control de versiones CN: detectar automáticamente si es texto 1853/1994
-            cn_version = None
-            if is_cn_document(tipo_norma.nombre):
-                cn_version = detect_cn_version(content)
-                if cn_version:
-                    status_cn = "VIGENTE" if cn_version == CN_VIGENTE_VERSION else "HISTÓRICA"
-                    logger.info(f"🧠 [WORKFLOW] CN Detectada: Versión {cn_version} ({status_cn})")
-                    if cn_version != CN_VIGENTE_VERSION:
-                        logger.warning(
-                            f"⚠️ [WORKFLOW] CN versión {cn_version} detectada en '{filename}'. "
-                            f"El texto vigente es {CN_VIGENTE_VERSION}. "
-                            f"El reranker penalizará este documento en consultas generales."
-                        )
-                else:
-                    logger.warning(f"⚠️ [WORKFLOW] No se pudo determinar la versión de la CN para '{filename}'.")
+            if not tipo_norma:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 1 — TipoNorma id={tipo_norma_id} no encontrada. ¿Seed ejecutado?")
+                raise ValueError(f"TipoNorma id={tipo_norma_id} no existe. Verificar seed de datos.")
+            if tipo_norma.tenant_id != tenant_id:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 1 — TipoNorma tenant={tipo_norma.tenant_id} != request tenant={tenant_id}")
+                raise ValueError(f"TipoNorma id={tipo_norma_id} no pertenece al Tenant {tenant_id}.")
+            logger.info(f"✅ [OK] [{rid}] PASO 1 — TipoNorma '{tipo_norma.nombre}' validada.")
+
+            # ── PASO 2: Metadata de jerarquía normativa ───────────────────────
+            logger.info(f"🧠 [WORKFLOW] [{rid}] PASO 2 — Calculando jerarquía normativa")
+            try:
+                from app.modules.assistant.normative_hierarchy import (
+                    get_hierarchy_level, detect_cn_version, is_cn_document, CN_VIGENTE_VERSION
+                )
+                hierarchy_level = get_hierarchy_level(tipo_norma.nombre)
+                logger.info(f"🧠 [WORKFLOW] [{rid}] PASO 2 — Jerarquía: {tipo_norma.nombre} (Nivel {hierarchy_level})")
+
+                cn_version = None
+                if is_cn_document(tipo_norma.nombre):
+                    cn_version = detect_cn_version(content)
+                    if cn_version:
+                        status_cn = "VIGENTE" if cn_version == CN_VIGENTE_VERSION else "HISTÓRICA"
+                        logger.info(f"🧠 [WORKFLOW] [{rid}] PASO 2 — CN Versión {cn_version} ({status_cn})")
+                        if cn_version != CN_VIGENTE_VERSION:
+                            logger.warning(f"⚠️ [WORKFLOW] [{rid}] CN versión {cn_version} ≠ vigente {CN_VIGENTE_VERSION}.")
+                    else:
+                        logger.warning(f"⚠️ [WORKFLOW] [{rid}] No se pudo determinar versión CN para '{filename}'.")
+            except Exception as e:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 2 — Error en jerarquía normativa: {e}")
+                raise
 
             extra_metadata = {
                 "jurisdiccion": jurisdiccion,
@@ -69,48 +85,63 @@ class IngestService:
                 "vigente": True,
                 **({"cn_version": cn_version} if cn_version else {}),
             }
-            
-            logger.info(f"🧬 [AGENT] Iniciando indexación vectorial en FAISS...")
-            rag_result = vector_store.ingest_text(
-                tenant_id=str(tenant_id),
-                text=content,
-                source=filename,
-                extra_metadata=extra_metadata
-            )
 
-            # 3. Vincular con Legislador (Autor)
-            from app.models.legislative import Legislador
-            logger.info(f"🧠 [WORKFLOW] Validando registro de Legislador para Usuario ID {user_id}...")
-            legislador = session.exec(select(Legislador).where(Legislador.user_id == user_id)).first()
-            
-            if not legislador:
-                # Si no existe el legislador para este usuario (ej: es admin), creamos uno genérico
-                logger.warning(f"⚠️ [WORKFLOW] Usuario ID {user_id} no tiene registro de Legislador. Creando uno automático...")
-                legislador = Legislador(user_id=user_id, tenant_id=tenant_id, distrito="Sede Central")
-                session.add(legislador)
+            # ── PASO 3: Indexación vectorial (RAG) ───────────────────────────
+            logger.info(f"🧬 [AGENT] [{rid}] PASO 3 — Iniciando indexación vectorial | chars={len(content)}")
+            try:
+                rag_result = vector_store.ingest_text(
+                    tenant_id=str(tenant_id),
+                    text=content,
+                    source=filename,
+                    extra_metadata=extra_metadata
+                )
+                logger.info(f"✅ [OK] [{rid}] PASO 3 — {rag_result['chunks']} chunks indexados.")
+            except Exception as e:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 3 — Error en indexación vectorial: {e}")
+                raise
+
+            # ── PASO 4: Resolución de Legislador ─────────────────────────────
+            logger.info(f"🧠 [WORKFLOW] [{rid}] PASO 4 — Resolviendo Legislador para user_id={user_id}")
+            try:
+                from app.models.legislative import Legislador
+                legislador = session.exec(select(Legislador).where(Legislador.user_id == user_id)).first()
+                if not legislador:
+                    logger.warning(f"⚠️ [WORKFLOW] [{rid}] PASO 4 — Usuario {user_id} sin Legislador. Creando automático.")
+                    legislador = Legislador(user_id=user_id, distrito="Sede Central")
+                    session.add(legislador)
+                    session.commit()
+                    session.refresh(legislador)
+                logger.info(f"✅ [OK] [{rid}] PASO 4 — Legislador id={legislador.id} resuelto.")
+            except Exception as e:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 4 — Error en resolución de Legislador: {e}")
+                raise
+
+            # ── PASO 5: Crear Proyecto en DB ─────────────────────────────────
+            logger.info(f"🧠 [WORKFLOW] [{rid}] PASO 5 — Creando registro Proyecto en DB")
+            try:
+                proyecto = Proyecto(
+                    numero_expediente=numero_expediente or f"EXP-{rag_result['hash'][:8].upper()}",
+                    titulo=filename,
+                    texto_completo=content,
+                    tenant_id=tenant_id,
+                    autor_id=legislador.id,
+                    tipo_norma_id=tipo_norma_id,
+                    jurisdiccion=jurisdiccion,
+                    estado=EstadoExpediente.INGRESO,
+                    vigente=True
+                )
+                session.add(proyecto)
                 session.commit()
-                session.refresh(legislador)
+                session.refresh(proyecto)
+                logger.info(f"✅ [OK] [{rid}] PASO 5 — Proyecto id={proyecto.id} creado.")
+            except Exception as e:
+                logger.error(f"❌ [FAULT] [{rid}] PASO 5 — Error al crear Proyecto: {e}")
+                raise
 
-            # 4. Crear Registro de Proyecto en DB (Capa 1)
-            proyecto = Proyecto(
-                numero_expediente=numero_expediente or f"EXP-{rag_result['hash'][:8].upper()}",
-                titulo=filename,
-                texto_completo=content,
-                tenant_id=tenant_id,
-                autor_id=legislador.id,
-                tipo_norma_id=tipo_norma_id,
-                jurisdiccion=jurisdiccion,
-                estado=EstadoExpediente.INGRESO,
-                vigente=True
-            )
-            session.add(proyecto)
-            session.commit()
-            session.refresh(proyecto)
-            
             logger.info(
-                f"✅ [OK] Documento '{filename}' persistido en DB y RAG. "
-                f"Proyecto ID: {proyecto.id} (Autor Legislador: {legislador.id}). "
-                f"Chunks: {rag_result['chunks']} ({rag_result.get('articles', 0)} artículos)."
+                f"✅ [OK] [{rid}] Ingesta COMPLETA: '{filename}' | "
+                f"Proyecto={proyecto.id} | Legislador={legislador.id} | "
+                f"Chunks={rag_result['chunks']} | Artículos={rag_result.get('articles', 0)}"
             )
 
             return {
