@@ -19,10 +19,14 @@ from app.core.config import settings
 if os.environ.get("WEBSITE_SITE_NAME") and "sqlite" in settings.DATABASE_URL.lower():
     os.makedirs("/home/data", exist_ok=True)
 
+_is_sqlite = "sqlite" in settings.DATABASE_URL.lower()
+_connect_args = {"timeout": 30, "check_same_thread": False} if _is_sqlite else {}
+
 engine = create_engine(
     settings.DATABASE_URL,
     echo=False,
-    pool_pre_ping=True
+    pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 def get_session():

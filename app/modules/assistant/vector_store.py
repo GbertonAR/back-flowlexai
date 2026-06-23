@@ -27,7 +27,11 @@ from app.core.config import settings
 from app.models.vector_storage import DocumentChunk
 from app.modules.assistant.legislative_chunker import chunk_document
 
-engine = create_engine(settings.DATABASE_URL)
+_is_sqlite = "sqlite" in settings.DATABASE_URL.lower()
+engine = create_engine(
+    settings.DATABASE_URL,
+    connect_args={"timeout": 30, "check_same_thread": False} if _is_sqlite else {},
+)
 
 _CACHE_TTL = 300  # segundos — tiempo de vida del caché de embeddings por tenant
 

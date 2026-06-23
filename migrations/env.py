@@ -58,16 +58,20 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+    """Run migrations in 'online' mode."""
+    db_url = config.get_main_option("sqlalchemy.url", "")
+    # Para SQLite: timeout=10 evita bloqueos indefinidos si el DB está ocupado.
+    # Si hay un lock (WAL incompleto, batch_alter interrumpido), falla rápido
+    # en lugar de colgar el servidor indefinidamente.
+    extra_args = {}
+    if db_url.startswith("sqlite"):
+        extra_args["connect_args"] = {"timeout": 10, "check_same_thread": False}
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        **extra_args,
     )
 
     with connectable.connect() as connection:
