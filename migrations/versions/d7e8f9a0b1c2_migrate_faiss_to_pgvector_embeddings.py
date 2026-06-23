@@ -24,15 +24,27 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # La tabla puede no existir en instalaciones limpias (creada por create_all)
     existing_tables = sa.inspect(conn).get_table_names()
     if "documentchunk" not in existing_tables:
         return
 
-    existing_cols = [c["name"] for c in sa.inspect(conn).get_columns("documentchunk")]
+    col_info   = {c["name"]: c for c in sa.inspect(conn).get_columns("documentchunk")}
+    col_names  = set(col_info.keys())
+
+    needs_embedding_json   = "embedding_json" not in col_names
+    # alter_column sólo si vector_id existe Y todavía es NOT NULL
+    needs_vector_id_fix    = (
+        "vector_id" in col_names and
+        col_info["vector_id"].get("nullable") is False
+    )
+
+    # Si el schema ya es correcto (creado por create_all), evitar batch_alter para
+    # no generar lock exclusivo SQLite que bloquearía la conexión del vector_store.
+    if not needs_embedding_json and not needs_vector_id_fix:
+        return
 
     with op.batch_alter_table("documentchunk", schema=None) as batch_op:
-        if "embedding_json" not in existing_cols:
+        if needs_embedding_json:
             batch_op.add_column(
                 sa.Column(
                     "embedding_json",
@@ -41,8 +53,7 @@ def upgrade() -> None:
                     server_default="[]",
                 )
             )
-        # vector_id deja de ser obligatorio
-        if "vector_id" in existing_cols:
+        if needs_vector_id_fix:
             batch_op.alter_column(
                 "vector_id",
                 existing_type=sa.Integer(),
