@@ -110,14 +110,8 @@ def upgrade() -> None:
         )
     conn = op.get_bind()
     existing_cols = [c['name'] for c in sa.inspect(conn).get_columns('auditorialog')]
-    with op.batch_alter_table('auditorialog', schema=None) as batch_op:
-        if 'content_hash' in existing_cols:
-            batch_op.alter_column('content_hash',
-                   existing_type=sa.TEXT(),
-                   type_=sqlmodel.sql.sqltypes.AutoString(),
-                   existing_nullable=True)
-        else:
-            batch_op.add_column(sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+    if 'content_hash' not in existing_cols:
+        op.add_column('auditorialog', sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True))
 
     tenant_cols = [c['name'] for c in sa.inspect(conn).get_columns('tenant')]
     if 'configuration' not in tenant_cols:
