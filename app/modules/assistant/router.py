@@ -80,8 +80,9 @@ async def analyze_legislative_query(
             "pipeline_trace": result.get("pipeline_trace", {}),
         }
     except Exception as e:
-        logger.error(f"❌ [FAULT] Error en el orquestador legislativo: {e}")
-        raise HTTPException(status_code=500, detail="Internal AI Error")
+        import traceback
+        logger.error(f"❌ [FAULT] Error en el orquestador legislativo: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal AI Error: {type(e).__name__}: {e}")
 
 @router.post("/search")
 async def semantic_search(

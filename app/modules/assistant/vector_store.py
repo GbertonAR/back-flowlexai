@@ -91,15 +91,19 @@ class PGVectorManager:
                 return data
 
         data: Dict[int, tuple] = {}
-        with Session(engine) as session:
-            chunks = session.exec(
-                select(DocumentChunk).where(DocumentChunk.tenant_id == t_id)
-            ).all()
-            for chunk in chunks:
-                if not chunk.embedding_json or chunk.embedding_json == "[]":
-                    continue
-                vec = np.array(json.loads(chunk.embedding_json), dtype="float32")
-                data[chunk.id] = (vec, chunk.content, chunk.metadata_dict)
+        try:
+            with Session(engine) as session:
+                chunks = session.exec(
+                    select(DocumentChunk).where(DocumentChunk.tenant_id == t_id)
+                ).all()
+                for chunk in chunks:
+                    if not chunk.embedding_json or chunk.embedding_json == "[]":
+                        continue
+                    vec = np.array(json.loads(chunk.embedding_json), dtype="float32")
+                    data[chunk.id] = (vec, chunk.content, chunk.metadata_dict)
+        except Exception as e:
+            logger.warning(f"⚠️ [WORKFLOW] No se pudieron cargar vectores del Tenant {t_id}: {e}")
+            return data
 
         self._cache[t_id] = (time.time(), data)
         return data

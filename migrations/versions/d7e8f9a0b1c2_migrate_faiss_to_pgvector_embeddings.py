@@ -28,37 +28,23 @@ def upgrade() -> None:
     if "documentchunk" not in existing_tables:
         return
 
-    col_info   = {c["name"]: c for c in sa.inspect(conn).get_columns("documentchunk")}
-    col_names  = set(col_info.keys())
+    col_info = {c["name"]: c for c in sa.inspect(conn).get_columns("documentchunk")}
 
-    needs_embedding_json   = "embedding_json" not in col_names
-    # alter_column sólo si vector_id existe Y todavía es NOT NULL
-    needs_vector_id_fix    = (
-        "vector_id" in col_names and
-        col_info["vector_id"].get("nullable") is False
-    )
+    # op.add_column es DDL nativo de SQLite (sin rebuild de tabla ni lock exclusivo).
+    # Seguro de ejecutar aunque haya otras conexiones abiertas al mismo archivo DB.
+    if "embedding_json" not in col_info:
+        op.add_column(
+            "documentchunk",
+            sa.Column("embedding_json", sa.Text(), nullable=False, server_default="[]"),
+        )
 
-    # Si el schema ya es correcto (creado por create_all), evitar batch_alter para
-    # no generar lock exclusivo SQLite que bloquearía la conexión del vector_store.
-    if not needs_embedding_json and not needs_vector_id_fix:
-        return
-
-    with op.batch_alter_table("documentchunk", schema=None) as batch_op:
-        if needs_embedding_json:
-            batch_op.add_column(
-                sa.Column(
-                    "embedding_json",
-                    sa.Text(),
-                    nullable=False,
-                    server_default="[]",
-                )
-            )
-        if needs_vector_id_fix:
-            batch_op.alter_column(
-                "vector_id",
-                existing_type=sa.Integer(),
-                nullable=True,
-            )
+    # alter_column para nullability SÍ requiere batch_alter (rebuild completo).
+    # Solo se ejecuta si vector_id todavía está marcado NOT NULL en el schema real.
+    # Si create_all creó la tabla con Optional[int], ya es nullable y se omite.
+    col_info = {c["name"]: c for c in sa.inspect(conn).get_columns("documentchunk")}
+    if "vector_id" in col_info and col_info["vector_id"].get("nullable") is False:
+        with op.batch_alter_table("documentchunk", schema=None) as batch_op:
+            batch_op.alter_column("vector_id", existing_type=sa.Integer(), nullable=True)
 
 
 def downgrade() -> None:

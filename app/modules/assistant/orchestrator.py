@@ -343,17 +343,20 @@ async def validator_node(state: AgentState):
 # ─── Nodo 8: Persist ─────────────────────────────────────────────────────────
 
 async def persist_node(state: AgentState):
-    with Session(engine) as session:
-        log = AuditoriaLog(
-            request_id=state["request_id"],
-            tenant_id=state["tenant_id"],
-            user_id=1,
-            module_used="Assistant",
-            action="query",
-            content_hash=hashlib.sha256(state["response"].encode()).hexdigest(),
-        )
-        session.add(log)
-        session.commit()
+    try:
+        with Session(engine) as session:
+            log = AuditoriaLog(
+                request_id=state["request_id"],
+                tenant_id=state["tenant_id"],
+                user_id=1,
+                module_used="Assistant",
+                action="query",
+                content_hash=hashlib.sha256(state["response"].encode()).hexdigest(),
+            )
+            session.add(log)
+            session.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ [WORKFLOW] Audit log no persistido (no crítico): {e}")
     return {"status": "COMPLETED"}
 
 
