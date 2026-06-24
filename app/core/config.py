@@ -29,13 +29,13 @@ env_config = {
 }
 
 def get_config(key: str, default: str = "") -> str:
-    """Retorna valor de configuración desde archivos cargados o desde os.environ sin mutar el entorno."""
-    val = env_config.get(key)
-    if val is not None and val != "":
-        return val.strip().lstrip('﻿')
+    """Retorna valor de configuración. os.environ (Azure App Settings) tiene prioridad sobre .env."""
     os_val = os.environ.get(key)
     if os_val is not None and os_val != "":
         return os_val.strip().lstrip('﻿')
+    val = env_config.get(key)
+    if val is not None and val != "":
+        return val.strip().lstrip('﻿')
     return default
 
 class LexIASettings(BaseModel):
@@ -53,7 +53,11 @@ class LexIASettings(BaseModel):
     ENCRYPTION_KEY: str  = get_config("ENCRYPTION_KEY", "")
 
     # ── Azure OpenAI ───────────────────────────────────────────────
-    USE_MANAGED_IDENTITY: bool = get_config("USE_MANAGED_IDENTITY", "false").lower() == "true"
+    # En Azure App Service (WEBSITE_SITE_NAME siempre presente), default a Managed Identity
+    USE_MANAGED_IDENTITY: bool = get_config(
+        "USE_MANAGED_IDENTITY",
+        "true" if os.environ.get("WEBSITE_SITE_NAME") else "false"
+    ).lower() == "true"
     OPENAI_API_KEY: str     = get_config("OPENAI_API_KEY", "")
     OPENAI_ENDPOINT: str    = get_config("OPENAI_ENDPOINT", "")
     OPENAI_API_VERSION: str = get_config("OPENAI_API_VERSION", "2024-05-01-preview")
