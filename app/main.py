@@ -32,18 +32,8 @@ from app import models  # noqa: F401 — side-effect: registra metadatos SQLMode
 async def lifespan(app: FastAPI):
     logger.info("✅ [OK] LexIA Core Engine Iniciado correctamente.")
 
-    # ── Migraciones Alembic (siempre primero) ─────────────────────
-    try:
-        from alembic.config import Config
-        from alembic import command as alembic_command
-
-        _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _cfg = Config(os.path.join(_base, "alembic.ini"))
-        _cfg.set_main_option("script_location", os.path.join(_base, "migrations"))
-        alembic_command.upgrade(_cfg, "head")
-        logger.info("✅ [OK] Migraciones Alembic aplicadas (upgrade head).")
-    except Exception as e:
-        logger.error(f"❌ [FAULT] Error aplicando migraciones Alembic: {e}")
+    # Migraciones Alembic: corren en start_backend.cmd (pre-step) para evitar
+    # lock de SQLite al competir con vector_store/session engines en el lifespan.
 
     # ── Fallback SQL: garantiza columna embedding_json en producción ──
     try:

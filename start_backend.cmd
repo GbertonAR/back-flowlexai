@@ -15,18 +15,18 @@ echo. > logs\debug_osemoc.log
 echo [WORKFLOW] [1/3] Verificando Migraciones Alembic...
 poetry run alembic upgrade head
 if %ERRORLEVEL% NEQ 0 (
-    echo [FAULT] Error en las migraciones. RequestID: ERR-M001
+    echo [FAULT] Migraciones fallidas. Abortando inicio. RequestID: ERR-M001
     pause
     exit /b %ERRORLEVEL%
 )
 
 echo.
-echo [AGENT] [2/3] Levantando Consola de Monitoreo (Streamlit)...
-start "LexIA Console" cmd /k "chcp 65001 > nul && cd /d %~dp0 && poetry run streamlit run ..\internal_tools\cloud_console\app.py"
+echo [WORKFLOW] [2/3] Limpiando log anterior...
+echo. > logs\debug_FlowLexAI.log
 
 echo.
 echo [WORKFLOW] [3/3] Levantando Motor Core (FastAPI)...
-echo Logs: %~dp0logs\debug_osemoc.log
+echo Logs: %~dp0logs\debug_FlowLexAI.log
 echo.
 poetry run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-exclude "logs" --log-level info
 
