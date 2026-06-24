@@ -46,19 +46,25 @@ class HealthService:
             return False
 
     async def check_azure_connectivity(self) -> bool:
-        """Ping ligero al endpoint de Azure OpenAI."""
-        if not settings.OPENAI_ENDPOINT or not settings.OPENAI_API_KEY:
+        """Ping ligero al endpoint de Azure OpenAI. Soporta API Key y Managed Identity."""
+        if not settings.OPENAI_ENDPOINT:
             return False
-            
+
         try:
-            # Construir URL de validación (usamos el endpoint base)
             url = f"{settings.OPENAI_ENDPOINT}/openai/deployments?api-version={settings.OPENAI_API_VERSION}"
-            headers = {"api-key": settings.OPENAI_API_KEY}
-            
+
+            if settings.USE_MANAGED_IDENTITY:
+                from azure.identity import DefaultAzureCredential
+                credential = DefaultAzureCredential()
+                token = credential.get_token("https://cognitiveservices.azure.com/.default")
+                headers = {"Authorization": f"Bearer {token.token}"}
+            elif settings.OPENAI_API_KEY:
+                headers = {"api-key": settings.OPENAI_API_KEY}
+            else:
+                return False
+
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url, headers=headers, timeout=5.0)
-                # 401/404/403 de Azure son "conectividad OK" (el host respondió)
-                # Pero un timeout o NameResolutionError son fallos de red.
                 return resp.status_code < 500
         except Exception:
             return False
